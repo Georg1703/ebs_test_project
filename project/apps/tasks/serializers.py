@@ -1,10 +1,10 @@
 from datetime import datetime, timezone
 
 from rest_framework import serializers
-from rest_framework.response import Response
 
-from .models import Task, CustomUser, Comment, TaskDuration
-from .service import send_user_email
+from .models import Task, Comment, TaskDuration
+from .service import send_user_email, get_all_commentators
+from apps.users.models import CustomUser
 
 
 class ListTaskSerializer(serializers.ModelSerializer):
@@ -18,7 +18,7 @@ class ListTaskSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         user = CustomUser.objects.get(id=validated_data['owner'].id)
-        send_user_email([user.email], 'new_task')
+        send_user_email(user.email, 'new_task')
 
         return Task.objects.create(**validated_data)
 
@@ -36,7 +36,7 @@ class CommentSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         user = CustomUser.objects.get(id=validated_data['task'].owner.id)
-        send_user_email([user.email], 'comment')
+        send_user_email(user.email, 'comment')
 
         return Comment.objects.create(**validated_data)
 
@@ -61,6 +61,25 @@ class SetTaskOwnerSerializer(serializers.Serializer):
         owner_id = self.validated_data['owner']
         task_id = self.validated_data['task']
         Task.objects.filter(id=task_id).update(owner=owner_id)
+
+
+class SetTaskCompletedSerializer(serializers.Serializer):
+    task = serializers.IntegerField(required=True)
+
+    def validate_task(self, value):
+        if not Task.objects.filter(id=value).exists():
+            raise serializers.ValidationError("Task not found")
+
+        if Task.objects.filter(id=value, status='CO').exists():
+            raise serializers.ValidationError("Task already have status completed")
+
+        return value
+
+    def create(self, validated_data):
+        task_id = self.validated_data['task']
+        Task.objects.filter(id=task_id).update(status='CO')
+        email_list = get_all_commentators(task_id)
+        send_user_email(email_list, 'completed')
 
 
 class TaskDurationStartSerializer(serializers.ModelSerializer):
@@ -97,7 +116,7 @@ class TaskDurationStopSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = TaskDuration
-        fields = fields = ('id', 'task', 'timer_on', 'owner', 'start_working_datetime')
+        fields = ('id', 'task', 'timer_on', 'owner', 'start_working_datetime')
 
     def create(self, validated_data):
         try:
@@ -123,19 +142,17 @@ class TaskDurationStopSerializer(serializers.ModelSerializer):
         return existing_task
 
 
-class OrderTaskSerializer(serializers.ModelSerializer):
-    task_duration = serializers.CharField(source='get_task_total_duration', read_only=True)
-
-    def create(self, validated_data):
-        return Task(**validated_data)
+class AddTimeOnSpecificDateSerializer(serializers.ModelSerializer):
+    duration = serializers.IntegerField(required=True)
 
     class Meta:
-        model = Task
-        fields = '__all__'
-        order_by = ('task_duration',)
+        model = TaskDuration
+        fields = ('start_working_datetime', 'task', 'duration')
 
-    def to_representation(self, instance):
-        response = super().to_representation(instance)
-        return dict(response)
+    def create(self, validated_data):
+        validated_data['timer_on'] = False
+        validated_data['duration'] = validated_data['duration'] * 60
+        return TaskDuration.objects.create(**validated_data)
+
 
 

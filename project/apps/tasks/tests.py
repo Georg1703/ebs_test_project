@@ -136,8 +136,8 @@ class TaskViewSetTest(APITestCase):
         self.insert_one_task('Task title', 'Some description')
         url = '/tasks/1/'
         response = self.client.delete(url)
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(json.loads(response.content), {'message': 'Order deleted successfully'})
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertEqual(Task.objects.all().count(), 0)
 
     def test_add_comment(self):
         self.insert_one_task('Task title', 'Some description')
@@ -187,7 +187,7 @@ class TaskViewSetTest(APITestCase):
         }])
 
 
-class TaskViewSetTest(TaskViewSetTest):
+class TaskDurationViewSetTest(TaskViewSetTest):
 
     def test_start_timer(self):
         self.insert_one_task('Task title', 'task description')
@@ -197,8 +197,7 @@ class TaskViewSetTest(TaskViewSetTest):
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(TaskDuration.objects.count(), 1)
-        task = TaskDuration.objects.get()
-        self.assertEqual(task.on, True)
+        self.assertEqual(TaskDuration.objects.get().timer_on, True)
 
         response = self.client.post(url, data)
 
@@ -206,7 +205,7 @@ class TaskViewSetTest(TaskViewSetTest):
             'detail': 'Timer for task is running already',
         })
 
-    def test_start_timer(self):
+    def test_stop_timer(self):
         self.insert_one_task('Task title', 'task description')
         task = Task.objects.get()
         TaskDuration.objects.create(
@@ -219,8 +218,7 @@ class TaskViewSetTest(TaskViewSetTest):
         response = self.client.post(url, data)
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        task = TaskDuration.objects.get()
-        self.assertEqual(task.timer_on, False)
+        self.assertEqual(TaskDuration.objects.get().timer_on, False)
 
     def test_get_timer_list(self):
         self.insert_one_task('Task title', 'task description')
@@ -235,6 +233,19 @@ class TaskViewSetTest(TaskViewSetTest):
         url = '/tasks/timer_list/?task=1'
         response = self.client.get(url)
         self.assertEqual(len(json.loads(response.content)), 1)
+
+    def test_add_time_on_specific_date(self):
+        self.insert_one_task('Task title', 'task description')
+        task = Task.objects.get()
+        url = '/tasks/add_time/'
+        data = {
+            'task': task.id,
+            'start_working_datetime': '2020-6-12T16:12:34',
+            'duration': 60
+        }
+        response = self.client.post(url, data)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(TaskDuration.objects.all().count(), 1)
 
     def test_get_last_month_time(self):
         self.insert_one_task('Task', 'task description')

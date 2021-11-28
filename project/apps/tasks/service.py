@@ -1,5 +1,6 @@
 from django.core.mail import EmailMessage
-from typing import List
+from typing import List, Union
+from collections.abc import Iterable
 
 from .models import Task, Comment
 
@@ -19,18 +20,22 @@ email_data = {
 }
 
 
-def send_user_email(user_email: str, type: str):
+def send_user_email(emails: Union[List[str], str], message_type: str):
+
+    if isinstance(emails, str) or not isinstance(emails, Iterable):
+        emails = [emails]
+
     email = EmailMessage(
-        email_data[type]['subject'],
-        email_data[type]['message'],
-        to=[*user_email],
+        email_data[message_type]['subject'],
+        email_data[message_type]['message'],
+        to=emails,
     )
     email.send()
 
 
-def get_all_comenters(task_id: int) -> List[str]:
+def get_all_commentators(task_id: int) -> List[str]:
     task = Task.objects.get(id=task_id)
     comments = Comment.objects.select_related('author').filter(task=task)
     email_list = set(comment.author.email for comment in comments)
 
-    return email_list
+    return list(email_list)

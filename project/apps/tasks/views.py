@@ -4,17 +4,20 @@ from rest_framework import viewsets, filters
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from django.core.cache import cache
+from django.db.models import Sum
 
-from .models import Task, Comment, CustomUser, TaskDuration
-from .service import send_user_email, get_all_comenters
+from .models import Task, Comment, TaskDuration
+from apps.users.models import CustomUser
+from .service import send_user_email
 from .serializers import (
     ListTaskSerializer,
     RetrieveTaskSerializer,
     SetTaskOwnerSerializer,
+    SetTaskCompletedSerializer,
     CommentSerializer,
     TaskDurationStartSerializer,
     TaskDurationStopSerializer,
-    OrderTaskSerializer
+    AddTimeOnSpecificDateSerializer
 )
 
 
@@ -32,11 +35,6 @@ class TaskViewSet(viewsets.ModelViewSet):
             return RetrieveTaskSerializer
         return ListTaskSerializer
 
-    def destroy(self, request, *args, **kwargs):
-        instance = self.get_object()
-        self.perform_destroy(instance)
-        return Response({'message': 'Order deleted successfully'})
-
     @action(detail=False, methods=['get'], serializer_class=ListTaskSerializer)
     def my_tasks(self, request):
         tasks = Task.objects.filter(owner=request.user).values('id', 'title')
@@ -53,40 +51,32 @@ class TaskViewSet(viewsets.ModelViewSet):
         if serializer.is_valid():
             serializer.save()
             user = CustomUser.objects.get(id=serializer.data['owner'])
-            send_user_email([user.email], 'new_task')
+            send_user_email(user.email, 'new_task')
             return Response(serializer.validated_data)
         else:
             return Response(serializer.errors)
 
     @action(detail=True, methods=['post'])
     def set_status_completed(self, request):
-        task_id = request.data.get('task_id')
-        if not task_id:
-            return Response({'task_id': ['This field is required']})
-
-        task = Task.objects.filter(id=task_id).first()
-        if task:
-            task.status = 'CO'
-            task.save()
-            email_list = get_all_comenters(task_id)
-            send_user_email(list(email_list), 'completed')
-            return Response({'detail': 'task status set to completed'})
-        return Response({'task_id': ['Task not found']})
+        serializer = SetTaskCompletedSerializer(data=request.data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.validated_data)
+        return Response(serializer.errors)
 
     @action(detail=False, methods=['get'])
     def get_top_tasks_last_month(self, request):
         user = request.user.email
         top_tasks = cache.get(user)
         if top_tasks:
-            return top_tasks
+            return Response(top_tasks)
 
-        queryset = Task.objects.filter(
-            created_at__gt=datetime.now() - timedelta(days=30)
-        )
-        serializer = OrderTaskSerializer(queryset, many=True)
-        task_list = [dict(item) for item in serializer.data]
-        sorted_task_list = sorted(task_list, key=lambda i: i['task_duration'])
-        top_20_tasks = sorted_task_list[-20:]
+        tasks = Task.objects\
+            .filter(created_at__gt=datetime.now() - timedelta(days=30),)\
+            .annotate(total_duration=Sum('task_duration__duration'))\
+            .order_by('-total_duration').values()
+
+        top_20_tasks = tasks[-20:]
         cache.set(user, top_20_tasks, timeout=60)
         return Response(top_20_tasks)
 
@@ -126,6 +116,14 @@ class TaskDurationViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def timer_stop(self, request):
         serializer = TaskDurationStopSerializer(data=request.data)
+        if serializer.is_valid():
+            serializer.save(owner=request.user)
+            return Response(serializer.data)
+        return Response(serializer.errors)
+
+    @action(detail=False, methods=['post'])
+    def add_time_on_specific_date(self, request):
+        serializer = AddTimeOnSpecificDateSerializer(data=request.data)
         if serializer.is_valid():
             serializer.save(owner=request.user)
             return Response(serializer.data)

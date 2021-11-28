@@ -33,5 +33,6 @@ urlpatterns = [
     path('timer_start/', TaskDurationViewSet.as_view({'post': 'timer_start'}), name='task_timer_start'),
     path('timer_stop/', TaskDurationViewSet.as_view({'post': 'timer_stop'}), name='task_timer_stop'),
     path('timer_list/', TaskDurationViewSet.as_view({'get': 'list'}), name='task_timer_list'),
+    path('add_time/', TaskDurationViewSet.as_view({'post': 'add_time_on_specific_date'}), name='add_time'),
     path('get_last_month_time/', TaskDurationViewSet.as_view({'get': 'get_last_month_time_logs'}), name='last_month'),
 ]
