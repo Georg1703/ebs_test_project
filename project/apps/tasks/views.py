@@ -1,27 +1,30 @@
 from datetime import datetime, timezone, timedelta
 
-from rest_framework import viewsets, filters
+from rest_framework import viewsets, filters, mixins
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from django.core.cache import cache
 from django.db.models import Sum
+from django.shortcuts import get_object_or_404
+from drf_yasg.utils import swagger_auto_schema
+from drf_yasg.utils import no_body
 
 from .models import Task, Comment, TaskDuration
 from apps.users.models import CustomUser
-from .service import send_user_email
+from .service import send_user_email, get_all_commentators
 from .serializers import (
     ListTaskSerializer,
     RetrieveTaskSerializer,
-    SetTaskOwnerSerializer,
-    SetTaskCompletedSerializer,
     CommentSerializer,
-    TaskDurationStartSerializer,
-    TaskDurationStopSerializer,
     AddTimeOnSpecificDateSerializer
 )
 
 
-class TaskViewSet(viewsets.ModelViewSet):
+class TaskViewSet(mixins.CreateModelMixin,
+                  mixins.RetrieveModelMixin,
+                  mixins.DestroyModelMixin,
+                  mixins.ListModelMixin,
+                  viewsets.GenericViewSet):
     queryset = Task.objects.all()
     serializer_class = ListTaskSerializer
     filter_backends = [filters.SearchFilter]
@@ -35,105 +38,127 @@ class TaskViewSet(viewsets.ModelViewSet):
             return RetrieveTaskSerializer
         return ListTaskSerializer
 
-    @action(detail=False, methods=['get'], serializer_class=ListTaskSerializer)
+    @action(detail=False, methods=['get'], url_path='mine')
     def my_tasks(self, request):
         tasks = Task.objects.filter(owner=request.user).values('id', 'title')
         return Response(tasks)
 
-    @action(detail=False, methods=['get'], serializer_class=ListTaskSerializer)
+    @action(detail=False, methods=['get'], url_path='completed')
     def completed_tasks(self, request):
         tasks = Task.objects.filter(status='CO').values('id', 'title')
         return Response(tasks)
 
-    @action(detail=True, methods=['post'])
-    def set_task_owner(self, request):
-        serializer = SetTaskOwnerSerializer(data=request.data)
-        if serializer.is_valid():
-            serializer.save()
-            user = CustomUser.objects.get(id=serializer.data['owner'])
-            send_user_email(user.email, 'new_task')
-            return Response(serializer.validated_data)
-        else:
-            return Response(serializer.errors)
+    @swagger_auto_schema(request_body=no_body)
+    @action(detail=True, methods=['patch'], url_path=r'owner/(?P<owner_id>\d+)')
+    def set_task_owner(self, request, pk=None, owner_id=None):
+        task = self.get_object()
+        owner = get_object_or_404(CustomUser.objects.all(), pk=owner_id)
+        task.owner = owner
+        task.save()
+        send_user_email(request.user.email, 'new_task')
+        return Response({'detail': 'success'})
 
-    @action(detail=True, methods=['post'])
-    def set_status_completed(self, request):
-        serializer = SetTaskCompletedSerializer(data=request.data)
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.validated_data)
-        return Response(serializer.errors)
+    @swagger_auto_schema(request_body=no_body)
+    @action(detail=True, methods=['patch'], url_path='complete')
+    def set_status_completed(self, request, pk=None):
+        task = self.get_object()
+        task.status = 'CO'
+        task.save()
 
-    @action(detail=False, methods=['get'])
+        email_list = get_all_commentators(pk)
+        send_user_email(email_list, 'completed')
+
+        return Response({'detail': 'success'})
+
+    @action(detail=False, methods=['get'], url_path='top-last-month')
     def get_top_tasks_last_month(self, request):
         user = request.user.email
         top_tasks = cache.get(user)
         if top_tasks:
             return Response(top_tasks)
 
-        tasks = Task.objects\
-            .filter(created_at__gt=datetime.now() - timedelta(days=30))\
-            .annotate(total_duration=Sum('task_duration__duration'))\
+        tasks = Task.objects \
+            .filter(created_at__gt=datetime.now() - timedelta(days=30)) \
+            .annotate(total_duration=Sum('task_duration__duration')) \
             .order_by('-total_duration').values()
 
-        top_20_tasks = tasks[-20:]
+        top_20_tasks = tasks[:20]
         cache.set(user, top_20_tasks, timeout=60)
         return Response(top_20_tasks)
 
+    @action(detail=True, methods=['post', 'get'], url_path='comments')
+    def comments(self, request, pk=None):
+        task = self.get_object()
 
-class CommentViewSet(viewsets.ModelViewSet):
-    queryset = Comment.objects.all()
-    serializer_class = CommentSerializer
-
-    def get_queryset(self):
-        task_id = self.request.query_params.get('task')
-        if task_id:
-            return Comment.objects.filter(task=task_id)
-        return []
-
-    def perform_create(self, serializer):
-        serializer.save(author=self.request.user)
+        if self.request.method == 'POST':
+            serializer = CommentSerializer(data=request.data, context={'task': task, 'user': request.user})
+            serializer.is_valid(raise_exception=True)
+            serializer.save()
+            return Response(serializer.data)
+        else:
+            comments = Comment.objects.filter(task=task).values()
+            return Response(comments)
 
 
-class TaskDurationViewSet(viewsets.ModelViewSet):
+class TaskDurationViewSet(viewsets.GenericViewSet):
     queryset = TaskDuration.objects.all()
-    serializer_class = TaskDurationStartSerializer
 
-    def get_queryset(self):
-        task_id = self.request.query_params.get('task')
+    @action(detail=True, methods=['post'], url_path='timer-start')
+    def timer_start(self, request, pk):
+        task = get_object_or_404(Task.objects.all(), pk=pk)
+        try:
+            existing_task = TaskDuration.objects.get(owner=request.user, task=task)
+        except TaskDuration.DoesNotExist:
+            return TaskDuration.objects.create(
+                owner=request.user,
+                task_id=pk,
+            )
 
-        if task_id:
-            return TaskDuration.objects.filter(task_id=task_id)
+        if existing_task.timer_on:
+            return Response({'detail': 'Timer for task is running already'})
+        else:
+            existing_task.timer_on = True
+            existing_task.start_working_datetime = datetime.now(timezone.utc)
+            existing_task.save()
+            return Response({'details': 'success'})
 
-    @action(detail=True, methods=['post'])
-    def timer_start(self, request):
-        serializer = TaskDurationStartSerializer(data=request.data)
-        if serializer.is_valid():
-            serializer.save(owner=request.user)
-            return Response(serializer.data)
-        return Response(serializer.errors)
+    @action(detail=True, methods=['post'], url_path='timer-stop')
+    def timer_stop(self, request, pk):
+        task = get_object_or_404(Task.objects.all(), pk=pk)
+        try:
+            existing_task = TaskDuration.objects.get(
+                task=task,
+                owner=request.user,
+                timer_on=True
+            )
+        except TaskDuration.DoesNotExist:
+            return Response({'detail': 'Timer for task was not found'})
 
-    @action(detail=True, methods=['post'])
-    def timer_stop(self, request):
-        serializer = TaskDurationStopSerializer(data=request.data)
-        if serializer.is_valid():
-            serializer.save(owner=request.user)
-            return Response(serializer.data)
-        return Response(serializer.errors)
+        now = datetime.now(timezone.utc)
+        task_duration = now - existing_task.start_working_datetime
 
-    @action(detail=False, methods=['post'])
-    def add_time_on_specific_date(self, request):
-        serializer = AddTimeOnSpecificDateSerializer(data=request.data)
-        if serializer.is_valid():
-            serializer.save(owner=request.user)
-            return Response(serializer.data)
-        return Response(serializer.errors)
+        if not existing_task.duration:
+            existing_task.duration = 0
 
-    @action(detail=False, methods=['get'])
+        existing_task.duration = existing_task.duration + task_duration.seconds
+        existing_task.timer_on = False
+        existing_task.stop_working_datetime = datetime.now(timezone.utc)
+        existing_task.save()
+
+        return Response({'details': 'success'})
+
+    @action(detail=True, methods=['post'], url_path='add-time')
+    def add_time_on_specific_date(self, request, pk):
+        task = get_object_or_404(Task.objects.all(), pk=pk)
+        serializer = AddTimeOnSpecificDateSerializer(data=request.data, context={'task': task})
+        serializer.is_valid(raise_exception=True)
+        serializer.save(owner=request.user)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=['get'], url_path='time-last-month')
     def get_last_month_time_logs(self, request):
         newest_time_logs = TaskDuration.objects.filter(
             owner=request.user,
             created_at__gt=datetime.now() - timedelta(days=30)
         ).values()
         return Response(newest_time_logs)
-
