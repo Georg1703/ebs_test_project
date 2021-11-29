@@ -72,7 +72,7 @@ class TaskViewSet(viewsets.ModelViewSet):
             return Response(top_tasks)
 
         tasks = Task.objects\
-            .filter(created_at__gt=datetime.now() - timedelta(days=30),)\
+            .filter(created_at__gt=datetime.now() - timedelta(days=30))\
             .annotate(total_duration=Sum('task_duration__duration'))\
             .order_by('-total_duration').values()
 
