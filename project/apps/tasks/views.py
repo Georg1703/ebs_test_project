@@ -86,53 +86,44 @@ class TaskViewSet(mixins.CreateModelMixin,
         cache.set(user, top_20_tasks, timeout=60)
         return Response(top_20_tasks)
 
-    @action(detail=True, methods=['post', 'get'], url_path='comments')
+    @action(detail=True, url_path='comments')
     def comments(self, request, pk=None):
         task = self.get_object()
+        comments = Comment.objects.filter(task=task).values()
+        return Response(comments)
 
-        if self.request.method == 'POST':
-            serializer = CommentSerializer(data=request.data, context={'task': task, 'user': request.user})
-            serializer.is_valid(raise_exception=True)
-            serializer.save()
-            return Response(serializer.data)
-        else:
-            comments = Comment.objects.filter(task=task).values()
-            return Response(comments)
+    @comments.mapping.post
+    def create_comments(self, request, pk=None):
+        task = self.get_object()
 
+        serializer = CommentSerializer(data=request.data, context={'task': task, 'user': request.user})
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
 
-class TaskDurationViewSet(viewsets.GenericViewSet):
-    queryset = TaskDuration.objects.all()
-
-    @action(detail=True, methods=['post'], url_path='timer-start')
+    @action(detail=True, methods=['post'], url_path='timer/start')
     def timer_start(self, request, pk):
-        task = get_object_or_404(Task.objects.all(), pk=pk)
-        try:
-            existing_task = TaskDuration.objects.get(owner=request.user, task=task)
-        except TaskDuration.DoesNotExist:
-            return TaskDuration.objects.create(
-                owner=request.user,
-                task_id=pk,
-            )
+        task = self.get_object()
 
-        if existing_task.timer_on:
-            return Response({'detail': 'Timer for task is running already'})
-        else:
-            existing_task.timer_on = True
-            existing_task.start_working_datetime = datetime.now(timezone.utc)
-            existing_task.save()
-            return Response({'details': 'success'})
+        task_duration, created = TaskDuration.objects.update_or_create(
+            owner=request.user, task=task,
+            defaults={
+                'timer_on': True,
+                'start_working_datetime': datetime.now(timezone.utc)
+            }
+        )
 
-    @action(detail=True, methods=['post'], url_path='timer-stop')
+        if created:
+            return Response({'detail': 'timer start'})
+        return Response({'detail': 'timer start'})
+
+    @action(detail=True, methods=['post'], url_path='timer/stop')
     def timer_stop(self, request, pk):
-        task = get_object_or_404(Task.objects.all(), pk=pk)
-        try:
-            existing_task = TaskDuration.objects.get(
-                task=task,
-                owner=request.user,
-                timer_on=True
-            )
-        except TaskDuration.DoesNotExist:
-            return Response({'detail': 'Timer for task was not found'})
+        task = self.get_object()
+        existing_task = get_object_or_404(
+            TaskDuration.objects.filter(task=task, owner=request.user, timer_on=True),
+            pk=pk
+        )
 
         now = datetime.now(timezone.utc)
         task_duration = now - existing_task.start_working_datetime
@@ -145,17 +136,17 @@ class TaskDurationViewSet(viewsets.GenericViewSet):
         existing_task.stop_working_datetime = datetime.now(timezone.utc)
         existing_task.save()
 
-        return Response({'details': 'success'})
+        return Response({'details': 'timer stop'})
 
-    @action(detail=True, methods=['post'], url_path='add-time')
+    @action(detail=True, methods=['post'], url_path='timer/add')
     def add_time_on_specific_date(self, request, pk):
-        task = get_object_or_404(Task.objects.all(), pk=pk)
+        task = self.get_object()
         serializer = AddTimeOnSpecificDateSerializer(data=request.data, context={'task': task})
         serializer.is_valid(raise_exception=True)
         serializer.save(owner=request.user)
         return Response(serializer.data)
 
-    @action(detail=False, methods=['get'], url_path='time-last-month')
+    @action(detail=False, methods=['get'], url_path='timer/last-month')
     def get_last_month_time_logs(self, request):
         newest_time_logs = TaskDuration.objects.filter(
             owner=request.user,

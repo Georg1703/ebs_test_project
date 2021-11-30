@@ -40,7 +40,7 @@ class Comment(TimeStampedModel):
 class TaskDuration(TimeStampedModel):
     task = models.ForeignKey(Task, related_name='task_duration', on_delete=models.CASCADE)
     owner = models.ForeignKey(CustomUser, on_delete=models.CASCADE)
-    start_working_datetime = models.DateTimeField()
+    start_working_datetime = models.DateTimeField(auto_now_add=True)
     stop_working_datetime = models.DateTimeField(blank=True, null=True)
     duration = models.IntegerField(blank=True, null=True)
     timer_on = models.BooleanField(default=True)
